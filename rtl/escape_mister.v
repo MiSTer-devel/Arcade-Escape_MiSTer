@@ -51,16 +51,16 @@
 //    download writer below (see the SPRITE REPACK block).  The Pocket does
 //    the same transform offline in support/build_rom.py.
 //
-// 6. EEPROM persistence (BUILD 103, rtl/ee_save.vhd) is NOT wired here.  That
-//    engine talks to the APF bridge and data slots directly, so it is Pocket
-//    -only; escape_core's ee_* ports all carry defaults and are left open.
-//    High scores and operator settings therefore do not survive a power cycle
-//    on MiSTer yet.  The MiSTer-native route is an <nvram index="4" size="512">
-//    element in the .mra plus the matching hps_io ioctl index-4 wiring.
-//    Because ee_save.vhd is not compiled here, its two "MLAB" ramstyle
-//    attributes - which exist only because the Pocket has zero spare M10K -
-//    cost this build nothing, so they are deliberately left alone rather than
-//    forked.
+// 6. EEPROM persistence (NVRAM-170).  The Pocket's ee_save.vhd talks to the
+//    APF bridge, so it is Pocket-only and not compiled here.  MiSTer uses the
+//    framework's own route: each MRA declares <nvram index="4" size="512"/>,
+//    and rtl/escape_hps_bridge.v (instantiated in Arcade-Escape.sv) loads the
+//    saved file into escape_core's EEPROM port B at launch and serves it back
+//    when Main saves.  NVRAM-171 follows the Arcade-Cave convention: OSD
+//    "Autosave NVRAM" (default Off) saves when the OSD opens if the game has
+//    changed the EEPROM; "Save NVRAM" saves now; Main's "Save settings" also
+//    saves.  Before NVRAM-170 (builds up to 167) high scores did not survive
+//    a power cycle on MiSTer.
 //============================================================================
 `default_nettype none
 
@@ -74,8 +74,17 @@ module escape_mister (
     input  wire        ioctl_download,
     input  wire        ioctl_wr,
     input  wire [24:0] ioctl_addr,
+    // GAMESEL-167: 00 Escape, 01 Klax prototype, 10 Guts n' Glory (MRA index-1 byte),
+    // already in clk_sys (escape_hps_bridge, NVRAM-170)
+    input  wire [1:0]  game_sel,
     input  wire [7:0]  ioctl_dout,
     output wire        ioctl_wait,
+    // NVRAM-170: EEPROM port B (clk_sys), driven by escape_hps_bridge
+    input  wire [8:0]  ee_saddr,
+    input  wire [7:0]  ee_sdin,
+    input  wire        ee_swe,
+    output wire [7:0]  ee_sq,
+    output wire        ee_wrpulse,
 
     // ---- SDRAM chip -------------------------------------------------------
     output wire [12:0] SDRAM_A,
@@ -281,7 +290,11 @@ wire [31:0] spr_word = { chunky2(iv0, iv1, iv2, iv3, 3'd0),
                          chunky2(iv0, iv1, iv2, iv3, 3'd4),
                          chunky2(iv0, iv1, iv2, iv3, 3'd6) };
 wire [31:0] raw_word = { dlb0, dlb1, dlb2, ioctl_dout };
-wire        in_spr   = (ioctl_addr >= SPR_BASE);
+// GAMESEL-167: only the planar graphics regions are repacked - the sprite/tile
+// slot at 0x120000 (1 MB) and Guts' own tile slot at 0x280000 (1 MB). The
+// JSA-II ADPCM slot at 0x240000 is written through raw.
+wire        in_spr   = (ioctl_addr >= SPR_BASE   && ioctl_addr < 25'h0220000) ||
+                       (ioctl_addr >= 25'h0280000 && ioctl_addr < 25'h0380000);
 
 always @(posedge clk_sdram) begin
     if (ioctl_wr && ioctl_download) begin
@@ -929,7 +942,11 @@ reg [2:0]  pfq_count = 3'd0;
 reg [1:0]  pfq_wr = 2'd0, pfq_rd = 2'd0;
 reg [1:0]  vg_done_last = 2'd0;
 
-wire [23:0] pf_fetch_addr = 24'h120000 + {pf_vdata[14:0], 5'd0} + {pf_y[2:0], 2'd0};
+// GUTS-168: Guts video mode follows the MRA byte; Guts' playfield tiles live
+// in their own 1 MB slot at 0x280000 (declared here, before first use)
+wire        game_guts     = (game_sel == 2'b10);
+wire [23:0] pf_tile_base  = game_guts ? 24'h280000 : 24'h120000;
+wire [23:0] pf_fetch_addr = pf_tile_base + {pf_vdata[14:0], 5'd0} + {pf_y[2:0], 2'd0};
 
 always @(posedge clk_sys) begin
     case (vis_x[2:0])
@@ -1117,6 +1134,7 @@ wire        mo_valid;
 wire        mo_stain_s, mo_stain_e;      // MOSTAIN-1 second-pass markers
 
 escape_mob umob (
+    .guts     ( game_guts ),
     .clk       ( clk_sys ),
     .reset_n   ( core_reset_n ),
     .x_count   ( x_count ),
@@ -1192,6 +1210,7 @@ wire        alpha_vis  = (pix != 2'b00) || act_opaque;
 wire        pr_mo_win, pr_shade, pr_m7, pr_pfm, pr_forcemc0;
 wire [10:0] pr_pen;
 escape_prio uprio (
+    .guts     ( game_guts ),
     .mo_valid ( mo_valid ),
     .mo_prio  ( mo_prio ),
     .mo_color ( mo_pen[7:4] ),
@@ -1339,8 +1358,24 @@ sync2 s_sk (clk_sys, skip_test, skip_s);
 // the same split the Pocket uses via core_top's synch_3.
 sync2 s_v3 (clk_sys, vshad3_on, vshad3_s);
 
-wire [3:0] p1_btn = {p1_duck | p1_bomb, 1'b0, p1_fire | p1_bomb, p1_jump | p1_bomb};
-wire [3:0] p2_btn = {p2_duck | p2_bomb, 1'b0, p2_fire | p2_bomb, p2_jump | p2_bomb};
+// GAMESEL-167: the four physical buttons (MRA order 1..4 = the Escape names
+// jump/fire/duck/bomb) land on CD11..CD8 per game, from MAME eprom.cpp:
+//   Escape  D8 jump, D9 fire, D11 duck; Bomb presses all three (the combo)
+//   Klax    D8 = Flip/Start (button 1) only. KLAXBTN-174: MAME's klaxp port
+//           lists Button 1..4 on D8..D11, but the program (traced in MAME)
+//           acts on D8 alone, so D9..D11 stay released. KLAXFLIP2-178:
+//           button 2 is "Flip (2nd)" and ORs into D8 too - a Klax cabinet has
+//           a Flip button each side of the stick, one function (as the
+//           official Klax core's "Flip (2nd)")
+//   Guts    D9 = Button 1, D8 = Button 2, D11 = Button 3, D10 unused (guts ports)
+wire [3:0] p1_btn_esc = {p1_duck | p1_bomb, 1'b0, p1_fire | p1_bomb, p1_jump | p1_bomb};
+wire [3:0] p2_btn_esc = {p2_duck | p2_bomb, 1'b0, p2_fire | p2_bomb, p2_jump | p2_bomb};
+wire [3:0] p1_btn_klx = {3'b000, p1_jump | p1_fire};
+wire [3:0] p2_btn_klx = {3'b000, p2_jump | p2_fire};
+wire [3:0] p1_btn_gut = {p1_duck, 1'b0, p1_jump, p1_fire};
+wire [3:0] p2_btn_gut = {p2_duck, 1'b0, p2_jump, p2_fire};
+wire [3:0] p1_btn = (game_sel == 2'b01) ? p1_btn_klx : (game_sel == 2'b10) ? p1_btn_gut : p1_btn_esc;
+wire [3:0] p2_btn = (game_sel == 2'b01) ? p2_btn_klx : (game_sel == 2'b10) ? p2_btn_gut : p2_btn_esc;
 
 // ===========================================================================
 // the machine
@@ -1370,9 +1405,10 @@ wire [3:0] p2_btn = {p2_duck | p2_bomb, 1'b0, p2_fire | p2_bomb, p2_jump | p2_bo
 //       pages 0x50000/0x51000/0x52000 are read zero times during gameplay
 //       (docs/investigations/VSHAD3.md section 8), and the CPUs run the same code here.
 //
-//   CPU_TYPE = 1   68010, the dedicated cabinet. Both schematic sets specify
-//       U68010 and the owner's board is a photographed MC68010P8; the JAMMA
-//       variant shipped a 68000 and is CPU_TYPE 0. Neither is a fallback.
+//   CPU_TYPE = 1   68010. Both schematic sets specify U68010 and the owner's
+//       board is a photographed MC68010P8; CPU_TYPE 0 is the 68000 that
+//       MAME models. Either part shipped in either cabinet (README.md, "CPU
+//       type") - it is not a cabinet distinction. Neither is a fallback.
 //       Behaviour is identical on this ROM; interrupt entry costs ~5 extra
 //       clocks for the extended exception frame. See docs/CPU_AND_ARBITER.md.
 
@@ -1383,7 +1419,8 @@ assign audio_l = pause ? 16'd0 : core_audio_l_w;
 assign audio_r = pause ? 16'd0 : core_audio_r_w;
 
 escape_core #(.PAR4_EN(1), .FASTPATH_EN(FASTPATH_EN), .EIRQ_MODE(0),
-              .TASLOCK_EN(TASLOCK_EN), .VSHAD3_EN(1), .CPU_TYPE(1)) ecore (
+              .TASLOCK_EN(TASLOCK_EN), .VSHAD3_EN(1), .CPU_TYPE(1),
+              .JSA_RT(1)) ecore (                       // GAMESEL-167: both sound boards, runtime pick
     .clk        ( clk_sys ),
     .reset_n    ( core_reset_n ),
     .rom_addr   ( core_rom_addr ),
@@ -1407,6 +1444,9 @@ escape_core #(.PAR4_EN(1), .FASTPATH_EN(FASTPATH_EN), .EIRQ_MODE(0),
     .vblank_in  ( vblank_w ),
     .p1_buttons ( p1_btn ),
     .p2_buttons ( p2_btn ),
+    .p1_joy     ( {p1_up, p1_down, p1_left, p1_right} ),   // GAMESEL-167: Klax digital sticks
+    .p2_joy     ( {p2_up, p2_down, p2_left, p2_right} ),
+    .game_sel   ( game_sel ),
     .adc_p1x    ( adc_p1x ),
     .adc_p1y    ( adc_p1y ),
     .adc_p2x    ( adc_p2x ),
@@ -1417,6 +1457,11 @@ escape_core #(.PAR4_EN(1), .FASTPATH_EN(FASTPATH_EN), .EIRQ_MODE(0),
     .step_btn   ( start1_s ),
     .pause      ( pause ),
     .skip_test  ( skip_s ),
+    .ee_saddr   ( ee_saddr ),
+    .ee_sdin    ( ee_sdin ),
+    .ee_swe     ( ee_swe ),
+    .ee_sq      ( ee_sq ),
+    .ee_wrpulse ( ee_wrpulse ),
     .irq_strict ( 1'b0 ),
     .vshad3_on  ( vshad3_s ),
     .uvol_ym    ( uvol_ym ),

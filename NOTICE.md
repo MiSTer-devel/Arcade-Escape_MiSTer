@@ -12,10 +12,11 @@ in the named file's header and this NOTICE is the pointer to it.
 | Component | Author(s) | Licence | Location |
 |---|---|---|---|
 | MiSTer framework | Till Harbaum, Alexey Melnikov (sorgelig), MiSTer-devel contributors | GPL-3.0-or-later | `sys/` |
-| Machine RTL (this project) + TMS5220 speech model | spoonelli (machine RTL); TMS5220.vhd © 2020 d18c7db (Alex), based on MAME's `tms5220.cpp` | GPL-3.0 | `rtl/core/` |
+| Machine RTL and MiSTer wrapper (this project) + TMS5220 speech model | spoonelli (machine RTL, `rtl/escape_mister.v`, `rtl/escape_hps_bridge.v`); TMS5220.vhd © 2020 d18c7db (Alex), based on MAME's `tms5220.cpp` | GPL-3.0 | `rtl/core/`, `rtl/escape_*.v` |
 | TG68K.C 68000/68010 soft CPU (both 68ks) | Tobias Gubener (TobiFlex); patches by MikeJ, Till Harbaum, Rok Krajnc, others | LGPL-3.0-or-later | `rtl/core/tg68kv/` (2 files with a documented LOCK-output change) + `rtl/TG68K/` (pristine support files) |
 | T65 6502 soft CPU (JSA-I sound CPU) | Daniel Wallner, Mike Johnson, Wolfgang Scherr, Morten Leikvoll | BSD-style (OpenCores) | `rtl/T65/` — its "redistributions in synthesized form" clause is satisfied by this documentation |
 | jt51 YM2151 FM core | Jose Tejada (jotego) | GPL-3.0 | `rtl/jt51/` (pristine) + `rtl/core/jt51v/` (2 files with a documented per-channel gain change) |
+| jt6295 OKI MSM6295 ADPCM core (JSA-II sound board: the Klax prototypes and Guts n' Glory; held in reset while Escape runs) | Jose Tejada (jotego) | GPL-3.0 | `rtl/jt6295/` (pristine, with its `LICENSE`) |
 
 The RTL base lineage (Arcade-Atari-system1_MiSTer by d18c7db and
 MiSTer-devel, GPL-3.0) is vendored through the files above rather than as a

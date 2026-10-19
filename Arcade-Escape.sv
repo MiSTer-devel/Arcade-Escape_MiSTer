@@ -191,6 +191,13 @@ localparam CONF_STR = {
 	"P4O[8],ROM Shadow 0x54000,On,Off;",
 	"P4O[7],Skip Self-Test,Off,On;",
 	"-;",
+	// NVRAM-171: the Arcade-Cave idiom and default. Autosave saves the EEPROM
+	// (high scores, operator settings) when the OSD opens, only if the game
+	// changed it; Save NVRAM saves now. Main's own "Save settings" also saves.
+	// MENU-174: placed above the game-settings row, Cave's order.
+	"O[32],Autosave NVRAM,Off,On;",
+	"T[33],Save NVRAM;",
+	"-;",
 	"O[6],Service Mode,Off,On;",
 	"-;",
 	"R[0],Reset;",
@@ -238,7 +245,11 @@ wire         ioctl_wr;
 wire  [15:0] ioctl_index;
 wire  [26:0] ioctl_addr;
 wire   [7:0] ioctl_dout;
-wire         ioctl_wait;
+wire         ioctl_wait;        // to hps_io: ROM loader | NVRAM loader backpressure
+wire         ioctl_wait_rom;
+wire         ioctl_upload;
+wire   [7:0] ioctl_din;
+wire         nv_wait, nv_upload_req;
 wire  [31:0] joystick_0, joystick_1;
 wire  [15:0] joystick_l_analog_0, joystick_l_analog_1;
 wire  [10:0] ps2_key;
@@ -264,6 +275,12 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_dout(ioctl_dout),
 	.ioctl_index(ioctl_index),
 	.ioctl_wait(ioctl_wait),
+	// NVRAM-170: EEPROM save (MRA <nvram index="4" size="512"/>)
+	.ioctl_upload(ioctl_upload),
+	.ioctl_upload_req(nv_upload_req),
+	.ioctl_upload_index(8'd4),
+	.ioctl_din(ioctl_din),
+	.ioctl_rd(),
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -272,10 +289,46 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ps2_key(ps2_key)
 );
 
-// Only ROM index 0 feeds the loader.  The machine has no DIP switches (the
-// cabinet is configured through its 93C46 EEPROM), so there is no index-1
-// config blob the way the Atari System 1 core carries its slapstic type.
+// ROM index 0 feeds the loader.  The machine has no DIP switches (the cabinet
+// is configured through its EEPROM).  An MRA carries two more things, both
+// handled by escape_hps_bridge across the clk_ram -> clk_sys boundary:
+//   index 1 - GAMESEL-167's game byte: 00 Escape (set 1 or 2), 01 Klax
+//             prototype, 02 Guts n' Glory; absent (Escape MRAs) = 00.
+//             NVRAM-170: builds 164-167 latched it on clk_sys and missed the
+//             28 ns hps_io strobe about four times in five.
+//   index 4 - NVRAM-170: the 512-byte EEPROM, loaded at launch. Saved
+//             (NVRAM-171, Cave convention) when the OSD opens if Autosave
+//             NVRAM is on and the game changed it, on Save NVRAM, or on
+//             Main's Save settings.
 wire rom_wr = ioctl_wr && ioctl_download && (ioctl_index == 16'd0);
+wire [1:0] game_sel;
+wire [8:0] ee_saddr;
+wire [7:0] ee_sdin, ee_sq;
+wire       ee_swe, ee_wrpulse;
+escape_hps_bridge hps_bridge
+(
+	.clk_ram        (clk_ram),
+	.clk_sys        (clk_sys),
+	.ioctl_download (ioctl_download),
+	.ioctl_upload   (ioctl_upload),
+	.ioctl_wr       (ioctl_wr),
+	.ioctl_addr     (ioctl_addr),
+	.ioctl_dout     (ioctl_dout),
+	.ioctl_index    (ioctl_index),
+	.ioctl_din      (ioctl_din),
+	.nv_wait        (nv_wait),
+	.upload_req     (nv_upload_req),
+	.osd_status     (OSD_STATUS),
+	.autosave       (status[32]),
+	.save_now       (status[33]),
+	.game_sel       (game_sel),
+	.ee_saddr       (ee_saddr),
+	.ee_sdin        (ee_sdin),
+	.ee_swe         (ee_swe),
+	.ee_sq          (ee_sq),
+	.ee_wrpulse     (ee_wrpulse)
+);
+assign ioctl_wait = ioctl_wait_rom | nv_wait;
 
 /////////////////////////   KEYBOARD   ///////////////////////////
 reg kb_up1, kb_dn1, kb_lf1, kb_rt1, kb_jump1, kb_fire1, kb_duck1, kb_bomb1;
@@ -336,7 +389,13 @@ escape_mister machine
 	.ioctl_wr       (rom_wr),
 	.ioctl_addr     (ioctl_addr[24:0]),
 	.ioctl_dout     (ioctl_dout),
-	.ioctl_wait     (ioctl_wait),
+	.ioctl_wait     (ioctl_wait_rom),
+	.game_sel       (game_sel),
+	.ee_saddr       (ee_saddr),
+	.ee_sdin        (ee_sdin),
+	.ee_swe         (ee_swe),
+	.ee_sq          (ee_sq),
+	.ee_wrpulse     (ee_wrpulse),
 
 	.SDRAM_A        (SDRAM_A),
 	.SDRAM_BA       (SDRAM_BA),
