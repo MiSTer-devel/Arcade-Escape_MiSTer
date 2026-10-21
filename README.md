@@ -293,10 +293,13 @@ the Pocket's — lives in
 
 ## License
 
-GPL-3.0 — sources at https://github.com/spoonelli/Atari-Dual-68k (branch
-`mister`; the Pocket release is
-[v0.1.1](https://github.com/spoonelli/Atari-Dual-68k/releases/tag/v0.1.1)).
-Third-party components and attributions: NOTICE.md in the repo. This
+GPL-3.0 — this repository is the complete corresponding source of the core in
+`releases/`. Development happens at
+https://github.com/spoonelli/Atari-Dual-68k (MiSTer branch
+`milestone-0.2-mister`; the Pocket release is
+[v0.2.0](https://github.com/spoonelli/Atari-Dual-68k/releases/tag/v0.2.0)).
+Third-party components, attributions and the licence texts binary
+distributions require: NOTICE.md in the repo. This
 project distributes no ROM data and no copyrighted artwork; use only with
 software you are legally entitled to.
 
