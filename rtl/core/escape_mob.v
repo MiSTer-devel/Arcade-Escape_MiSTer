@@ -68,7 +68,13 @@ module escape_mob (
     output reg  [7:0]  dbg_trunc,
     output reg  [7:0]  dbg_maxlat,
     output wire        disp_stain_s,    // special pixel here, pen bit 1 set
-    output wire        disp_stain_e     // special pixel here, pen bit 2 set
+    output wire        disp_stain_e,    // special pixel here, pen bit 2 set
+    // GUTS-168: Guts n' Glory's MO list (MAME s_guts_mob_config, proven offline
+    // on twelve frames - KLAX_GUTS.md 4c): height is w3[3:0] (Escape: w3[2:0]),
+    // hflip is w1[15] (Escape: w3[3]), and the list renders FORWARD, i.e. a
+    // later entry paints over an earlier one - in this line buffer that is
+    // "last writer wins" instead of Escape's "first writer wins".
+    input  wire        guts
 );
 
     // MOCHAN-4: per-channel registers behind the packed ports. Keeping the
@@ -203,11 +209,30 @@ module escape_mob (
     // which is what a powered-up (or never-written) M10K location reads.
     // Without that, an untouched entry aliases the tag {fpar=0, ly=0}.
     // "occupied" = a real pixel written for the line this buffer was built for,
-    // special or not. "hit" = one that is allowed to DRAW (i.e. not special).
+    // special or not. "hit" = one that is allowed to DRAW.
+    //
+    // MOSHADE-162: a special (MPR2) pixel whose pen is exactly 1 DOES draw.
+    // GAL 136069.100V (the line-buffer write PAL, decoded from the romset
+    // fuse map - see docs/investigations/MAP_HALFTONE.md) writes normal
+    // pixels when pen != 0 and MAT6 = 0, and has ONE extra write term:
+    //     MSD0 & /MSD1 & /MSD2 & /MSD3 & MAT6   (special, pen == 1)
+    // Pens 2/4/6 on a special sprite only pulse /STON and /STOFF (the stain
+    // markers); pen 1 is written like any sprite pixel and reaches GAL 100T
+    // as MPX = 1, i.e. the SHADE / M7 case: the playfield wins and moves to
+    // its alternate (dim, I=4) colour bank.  That is how the FACTORY MAP dims
+    // its unreachable routes.  MAME's screen_update `continue`s on
+    // mopriority & 4 BEFORE computing SHADE, so MAME never dims them and
+    // this core inherited that; the owner's PCB capture dims them.
+    // GUTS-169: that write term is Escape's GAL. Guts n' Glory's only
+    // reference is MAME's screen_update_guts, which skips EVERY special
+    // object, and the offline proof (KLAX_GUTS.md 4c) matched MAME with that
+    // rule - so in Guts mode no special pixel reaches the comparator. Before
+    // this gate a pen-1 special drew as a solid sprite block in Guts mode
+    // (sim/tools/make_guts_pen1_special.py control: 64 px drawn, now 0).
     wire occ0 = (disp_q0[19:11] == {built_fp0, built_ly0}) && (disp_q0[3:0] != 4'd0);
     wire occ1 = (disp_q1[19:11] == {built_fp1, built_ly1}) && (disp_q1[3:0] != 4'd0);
-    wire hit0 = occ0 && !disp_q0[10];
-    wire hit1 = occ1 && !disp_q1[10];
+    wire hit0 = occ0 && (!disp_q0[10] || (!guts && disp_q0[3:0] == 4'd1));
+    wire hit1 = occ1 && (!disp_q1[10] || (!guts && disp_q1[3:0] == 4'd1));
     // MOPAIR-131: per-bank occupancy of the BUILD buffer, for first-write-wins
     // on each half of the pair independently.
     wire [19:0] bld_qe = build_sel ? disp_q1e : disp_q0e;
@@ -287,14 +312,15 @@ module escape_mob (
     always @(posedge clk) clr_x <= disp_x;
 
     always @(posedge clk) begin
+        // GUTS-168: forward render order = last writer wins
         if(build_sel) begin
-            if(wr_en_e && !occ_e) buf1e[wr_xe] <= {wr_hi, wr_pen_e};
-            if(wr_en_o && !occ_o) buf1o[wr_xo] <= {wr_hi, wr_pen_o};
+            if(wr_en_e && (!occ_e || guts)) buf1e[wr_xe] <= {wr_hi, wr_pen_e};
+            if(wr_en_o && (!occ_o || guts)) buf1o[wr_xo] <= {wr_hi, wr_pen_o};
             buf0e[clr_x[8:1]] <= 20'd0;
             buf0o[clr_x[8:1]] <= 20'd0;
         end else begin
-            if(wr_en_e && !occ_e) buf0e[wr_xe] <= {wr_hi, wr_pen_e};
-            if(wr_en_o && !occ_o) buf0o[wr_xo] <= {wr_hi, wr_pen_o};
+            if(wr_en_e && (!occ_e || guts)) buf0e[wr_xe] <= {wr_hi, wr_pen_e};
+            if(wr_en_o && (!occ_o || guts)) buf0o[wr_xo] <= {wr_hi, wr_pen_o};
             buf1e[clr_x[8:1]] <= 20'd0;
             buf1o[clr_x[8:1]] <= 20'd0;
         end
@@ -472,6 +498,7 @@ module escape_mob (
     reg [9:0]  q_link [0:QDEPTH-1];
     reg [15:0] q_w3   [0:QDEPTH-1];
     reg [14:0] q_code [0:QDEPTH-1];     // first tile-row of that sprite
+    reg        q_hf   [0:QDEPTH-1];     // GUTS-168: w1[15], Guts' hflip
     reg [2:0]  q_row  [0:QDEPTH-1];     // row within the tile
     reg        q_pf   [0:QDEPTH-1];     // tile 0 is already in flight...
     reg [1:0]  q_ch   [0:QDEPTH-1];     // ...on this channel
@@ -532,7 +559,8 @@ module escape_mob (
     reg [3:0]  spr_color;
     reg [2:0]  spr_prio;                // w2[6:4] - MPR2:MPR0
     reg [8:0]  spr_x;
-    reg [2:0]  width_t, height_t;
+    reg [2:0]  width_t;
+    reg [3:0]  height_t;                // GUTS-168: 4 bits (Escape uses 3)
     reg        hflip;
     reg [2:0]  tx;                      // next tile to LATCH/blit
     // MOCHAN-4: tx_f is 4 bits. With 3 bits it wrapped to 0 on an 8-tile
@@ -616,7 +644,7 @@ module escape_mob (
     // offset by the sprite height: top = -yfield - (height+1)*8. So
     // ydiff = ly - top = ly + yfield + (height+1)*8. The raw-field compare
     // matched almost nothing (v79 probe: 97 fetches, 12 pixels/frame).
-    wire [8:0] ydiff = (ly + spr_y + {1'b0, height_t, 3'b000} + 9'd8) & 9'h1FF;
+    wire [8:0] ydiff = (ly + spr_y + {2'b0, height_t, 3'b000} + 9'd8) & 9'h1FF;
     wire       ymatch = ydiff < {height_t, 3'b000} + 9'd8;   // (height+1)*8 lines
 
     // MOFETCH-1: the same test one cycle EARLIER, straight off the MO RAM bus
@@ -625,8 +653,8 @@ module escape_mob (
     // reading w1/w2 - see the S_E2/S_E3 loop below. Identical arithmetic, so
     // ymatch_e at S_E3 == ymatch at S_WAIT for the same entry, by construction.
     wire [8:0] e_y     = mo_vdata[15:7];
-    wire [2:0] e_h     = mo_vdata[2:0];
-    wire [8:0] ydiff_e = (ly + e_y + {1'b0, e_h, 3'b000} + 9'd8) & 9'h1FF;
+    wire [3:0] e_h     = {guts & mo_vdata[3], mo_vdata[2:0]};   // GUTS-168: 4-bit height
+    wire [8:0] ydiff_e = (ly + e_y + {2'b0, e_h, 3'b000} + 9'd8) & 9'h1FF;
     wire       ymatch_e = ydiff_e < {e_h, 3'b000} + 9'd8;
 
     // MOFETCH-2: completion edges as wires - the abort block below needs to
@@ -1077,8 +1105,8 @@ module escape_mob (
                 mo_vaddr <= {q_link[0], 2'd2};
                 spr_y    <= q_w3[0][15:7];
                 width_t  <= q_w3[0][6:4];
-                height_t <= q_w3[0][2:0];
-                hflip    <= q_w3[0][3];
+                height_t <= guts ? q_w3[0][3:0] : {1'b0, q_w3[0][2:0]};   // GUTS-168
+                hflip    <= guts ? q_hf[0]      : q_w3[0][3];
                 w3       <= q_w3[0];
                 code_row    <= q_code[0];
                 row_in_tile <= q_row[0];
@@ -1316,7 +1344,7 @@ module escape_mob (
             if(q_pop) begin
                 for(qi = 0; qi < QDEPTH-1; qi = qi + 1) begin
                     q_link[qi] <= q_link[qi+1];  q_w3[qi]  <= q_w3[qi+1];
-                    q_code[qi] <= q_code[qi+1];  q_row[qi] <= q_row[qi+1];
+                    q_code[qi] <= q_code[qi+1];  q_row[qi] <= q_row[qi+1];  q_hf[qi] <= q_hf[qi+1];
                     q_pf[qi]   <= q_pf[qi+1];    q_ch[qi]  <= q_ch[qi+1];
                     q_got[qi]  <= hv[qi+1] ? 1'b1      : q_got[qi+1];
                     q_dat[qi]  <= hv[qi+1] ? hv_dat[qi+1] : q_dat[qi+1];
@@ -1334,6 +1362,7 @@ module escape_mob (
                 q_link[q_tl] <= s_link;
                 q_w3[q_tl]   <= s_w3;
                 q_code[q_tl] <= q_new_code;
+                q_hf[q_tl]   <= mo_vdata[15];
                 q_row[q_tl]  <= s_ydiff[2:0];
                 q_pf[q_tl]   <= 1'b0;
                 q_got[q_tl]  <= 1'b0;

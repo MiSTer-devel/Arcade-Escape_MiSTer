@@ -1,8 +1,8 @@
 # Atari Escape - MiSTer file list.
 #
-# Paths are relative to this .qip (the repo root). All sources are vendored
-# under rtl/ - this repo is the self-contained MiSTer distribution of the
-# core; upstream development lives at github.com/spoonelli/Atari-Dual-68k.
+# Paths are relative to this .qip, i.e. to src/mister/.  The machine RTL is
+# NOT copied here: every file below src/fpga/core/rtl is the same source the
+# Pocket build compiles.
 #
 # VENDORING RULES (identical to src/fpga/ap_core.qsf - see its comments):
 #   * jt51.v and jt51_acc.v are VENDORED into core/rtl/jt51v/ (per-channel
@@ -16,6 +16,7 @@
 
 set_global_assignment -name SYSTEMVERILOG_FILE Arcade-Escape.sv
 set_global_assignment -name VERILOG_FILE rtl/escape_mister.v
+set_global_assignment -name VERILOG_FILE rtl/escape_hps_bridge.v
 # NOTE: the core PLL is NOT listed here.  sys/pll_q<version>.qip pulls in
 # "rtl/pll.qip" (a path the MiSTer framework hard-codes relative to the project
 # directory), which is why our PLL lives at src/mister/rtl/pll.qip.  Listing it
@@ -36,6 +37,19 @@ set_global_assignment -name VHDL_FILE rtl/core/dpram_dc.vhd
 set_global_assignment -name VHDL_FILE rtl/core/escape_decode.vhd
 set_global_assignment -name VHDL_FILE rtl/core/spram_bytelane.vhd
 set_global_assignment -name VHDL_FILE rtl/core/dpram_bytelane_syn.vhd
+
+# ---- jt6295 (OKI MSM6295, JSA-II sound board for the Klax prototypes and
+#      Guts n' Glory; GAMESEL-167 builds both boards, JSA2-164) - pristine submodule
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt6295.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt6295_acc.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt6295_adpcm.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt6295_ctrl.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt6295_rom.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt6295_serial.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt6295_sh_rst.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt6295_timing.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt12_comb.v
+set_global_assignment -name VERILOG_FILE rtl/jt6295/jt12_interpol.v
 
 # ---- jt51 (YM2151): two vendored files + pristine submodule ---------------
 set_global_assignment -name VERILOG_FILE rtl/core/jt51v/jt51.v
